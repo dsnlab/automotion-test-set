@@ -1,0 +1,1 @@
+rsync -aiv -e ssh --files-from=:/home/flournoy/vidlist.csv flournoy@talapas-ln1:/ ./
