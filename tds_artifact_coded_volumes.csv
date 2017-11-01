@@ -1,4 +1,4 @@
-SID,run,Volume #,Striping,Intensity Change
+subjectID,run,volume,striping,intensity
 102,stop7,4,2,
 102,stop7,5,2,
 102,stop7,6,1,
