@@ -1,0 +1,149 @@
+---
+title: "auto-motion test"
+author: "Dani Cosme"
+date: "10/30/2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE, fig.path='Figs/')
+```
+
+# load packages
+```{r}
+library(tidyverse)
+```
+
+# load coded data
+```{r}
+coded = gdata::read.xls("~/Documents/code/dsnlab/automotion-test-set/Coded Vids8-25.xlsx")
+```
+
+# load stripe detection data
+```{r}
+fileDir = "~/Documents/code/dsnlab/automotion-test-set/output/"
+filePattern = "tds_stripes_.*.csv"
+  
+file_list = list.files(fileDir, pattern = filePattern)
+
+for (file in file_list){
+  # if the merged dataset doesn't exist, create it
+  if (!exists("dataset")){
+    temp = read.csv(paste0(fileDir,file))
+    dataset = data.frame(temp) %>% 
+      rename("volume" = t,
+             "SID" = subject) %>%
+      select(-file)
+    rm(temp)
+  }
+  
+  # if the merged dataset does exist, append to it
+  else {
+    temp_dataset = read.csv(paste0(fileDir,file))
+    temp_dataset = data.frame(temp_dataset) %>% 
+      rename("volume" = t,
+             "SID" = subject) %>%
+      select(-file)
+    dataset = rbind(dataset, temp_dataset)
+    rm(temp_dataset)
+  }
+}
+```
+
+# join dataframes
+```{r}
+joined = left_join(dataset, coded, by = c("SID", "run", "volume")) %>%
+  mutate(striping = ifelse(is.na(striping), 0, striping),
+         intensity = ifelse(is.na(intensity), 0, intensity))
+```
+
+# apply absolute thresholds and plot
+```{r, fig.width=20, fig.height=100}
+test = joined %>%
+  group_by(SID, run, tile) %>%
+  mutate(freqtile_power_c = freqtile_power - mean(freqtile_power)) %>%
+  ungroup() %>%
+  filter(tile == 1 | tile == 10) %>%
+  select(-freqtile_power) %>%
+  spread(tile,freqtile_power_c) %>%
+  mutate(red_zone = ifelse(`1` < -.03 & `10` > .0002, TRUE, FALSE),
+         red_zone = ifelse(lead(red_zone) == TRUE, TRUE, red_zone),
+         label = ifelse(red_zone, as.character(volume), ''),
+         hits = ifelse(red_zone == TRUE & striping == 2, "hit",
+                ifelse(red_zone == TRUE & striping == 1, "hit.light",
+                ifelse(red_zone == TRUE & striping == 0, "pos",
+                ifelse(red_zone == FALSE & striping == 2, "neg",
+                ifelse(red_zone == FALSE & striping == 1, "light", NA))))),
+         hits = as.factor(hits)) %>%
+  gather(tile, freqtile_power_c, c(`1`, `10`)) %>%
+  mutate(tile = as.numeric(tile))
+
+thresholds = test %>% select(SID, run, tile) %>% unique(.) %>% mutate(y = ifelse(tile == 1, -.03, .00025))
+
+ggplot(test, aes(x = volume, y = freqtile_power_c)) +
+  geom_line(size = .25) +
+  geom_point(data = subset(test, !is.na(hits)), aes(color = hits), size = 2.5) +
+  geom_text(aes(label = label), size = 2, position = position_nudge(x = 1.5, y = .000025)) + 
+  facet_wrap(~SID + run + tile, scales = "free", ncol = 4) + 
+  scale_color_manual(values = c("#3B9AB2","#78B7C5","#9EBE91","#EBCC2A","#F21A00")) + 
+  geom_hline(data = thresholds, aes(yintercept = y), color = "#F21A00") +
+  scale_alpha(range = c(.3, .6), guide = FALSE) +
+  theme(axis.text.x = element_text(size = 6))
+```
+
+# apply threshold using SDs and plot
+```{r, fig.width=20, fig.height=100}
+test_diff = joined %>%
+  group_by(SID, run, tile) %>%
+  mutate(freqtile_power_c = freqtile_power - mean(freqtile_power),
+         diff = freqtile_power - lag(freqtile_power)) %>%
+  select(-freqtile_power, -freqtile_power_c) %>%
+  filter(tile == 1 | tile == 10) %>%
+  spread(tile,diff) %>%
+  ungroup() %>%
+  mutate(upper_1 = (mean(`1`,na.rm=TRUE) + 3*sd(`1`, na.rm=TRUE)),
+         lower_1 = (mean(`1`,na.rm=TRUE) - 3*sd(`1`, na.rm=TRUE)),
+         upper_10 = (mean(`10`,na.rm=TRUE) + 3*sd(`10`, na.rm=TRUE)),
+         lower_10 = (mean(`10`,na.rm=TRUE) - 3*sd(`10`, na.rm=TRUE))) %>%
+  mutate(red_zone_1 = ifelse(`1` > upper_1 | `1` < lower_1, TRUE, FALSE),
+         red_zone_10 = ifelse(`10` > upper_10 | `10` < lower_10, TRUE, FALSE),
+         red_zone = ifelse(red_zone_1 == TRUE | red_zone_10 == TRUE, TRUE, FALSE),
+         red_zone = ifelse(lead(red_zone) == TRUE, TRUE, red_zone),
+         label = ifelse(red_zone, as.character(volume), ''),
+         hits = ifelse(red_zone == TRUE & striping == 2, "hit",
+                ifelse(red_zone == TRUE & striping == 1, "hit.light",
+                ifelse(red_zone == TRUE & striping == 0, "pos",
+                ifelse(red_zone == FALSE & striping == 2, "neg",
+                ifelse(red_zone == FALSE & striping == 1, "light", NA))))),
+         hits = as.factor(hits)) %>%
+  gather(tile, diff, c(`1`, `10`)) %>%
+  mutate(tile = as.numeric(tile))
+
+thresholds = test_diff %>% 
+  select(SID, run, tile, diff) %>% 
+  group_by(tile) %>%
+  mutate(upper = mean(diff, na.rm=TRUE) + 1*sd(diff, na.rm=TRUE),
+         lower = mean(diff, na.rm=TRUE) - 1*sd(diff, na.rm=TRUE)) %>%
+  select(-diff) %>%
+  unique(.)
+
+ggplot(test_diff, aes(x = volume, y = diff)) +
+  geom_line(size = .25) +
+  geom_point(data = subset(test_diff, !is.na(hits)), aes(color = hits), size = 2.5) +
+  geom_text(aes(label = label), size = 2, position = position_nudge(x = 1.5, y = .000025)) +
+  facet_wrap(~ SID + run + tile, ncol = 4, scales = "free") +
+ scale_color_manual(values = c("#3B9AB2","#78B7C5","#9EBE91","#EBCC2A","#F21A00")) +
+  geom_hline(data = thresholds, aes(yintercept = upper), color = "#F21A00") +
+  geom_hline(data = thresholds, aes(yintercept = lower), color = "#F21A00") +
+  scale_alpha(range = c(.3, .6), guide = FALSE) +
+  theme(axis.text.x = element_text(size = 6))
+```
+
+# compare hit rates
+```{r}
+# absolute thresholing
+table(test$hits)
+
+# SD thresholding
+table(test_diff$hits)
+```
