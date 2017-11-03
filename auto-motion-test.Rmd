@@ -12,6 +12,10 @@ knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE, fig.path='F
 # load packages
 ```{r}
 library(tidyverse)
+library(glmnet)
+library(caTools)
+library(caret)
+library(ROCR)
 ```
 
 # load coded data
@@ -105,6 +109,107 @@ joined = left_join(stripes, coded, by = c("subjectID", "run", "volume")) %>%
          intensity = ifelse(is.na(intensity), 0, intensity))
 ```
 
+# use lasso logistic regression to fit beta weights for each predictor
+```{r, logistic-regression}
+# tidy data
+data = joined %>%
+  mutate(tile = paste0("tile_",tile),
+         artifact = ifelse(striping > 0 | intensity > 0, 1, 0)) %>%
+  spread(tile, freqtile_power) %>%
+  select(-striping, - intensity, -euclidian_rot_deriv, -trash.rp) %>%
+  select(subjectID, run, volume, euclidian_trans_deriv, artifact, everything())
+
+# create training and test sets
+set.seed(101) 
+sample = sample.split(data$artifact, SplitRatio = .75)
+train = subset(data, sample == TRUE)
+test  = subset(data, sample == FALSE)
+
+# subset predictors and criterion
+x = as.matrix(train[,-c(1,2,3,4,5)])
+y = as.double(as.matrix(train[, 5]))
+
+# run xval to determine lambda
+cv.train <- cv.glmnet(x, y, family='binomial', alpha=1, parallel=TRUE, standardize=TRUE, type.measure='auc')
+
+plot(cv.train)
+plot(cv.train$glmnet.fit, xvar="lambda", label=TRUE)
+cv.train$lambda.min
+cv.train$lambda.1se
+coef(cv.train, s=cv.train$lambda.min)
+coef(cv.train, s=cv.train$lambda.1se)
+
+# test on sample
+pred = predict(cv.train, newx = x, s=cv.train$lambda.1se, type="response")
+
+# plot cutoff v. accuracy
+predicted = prediction(pred, y, label.ordering = NULL)
+perf = performance(predicted, measure = "acc")
+perf.df = data.frame(cut=perf@x.values[[1]],acc=perf@y.values[[1]])
+
+ggplot(perf.df, aes(cut, acc)) +
+  geom_line()
+
+# plot false v. true positive rate
+perf = performance(predicted, measure = "tpr", x.measure = "fpr")
+perf.df = data.frame(cut=perf@alpha.values[[1]],fpr=perf@x.values[[1]],tpr=perf@y.values[[1]])
+
+ggplot(perf.df, aes(fpr, tpr)) +
+  geom_line()
+
+# plot specificity v. sensitivity
+perf = performance(predicted, measure = "sens", x.measure = "spec")
+perf.df = data.frame(cut=perf@alpha.values[[1]],sens=perf@x.values[[1]],spec=perf@y.values[[1]])
+ggplot(perf.df, aes(spec, sens)) +
+  geom_line()
+
+ggplot(perf.df, aes(x = cut)) +
+  geom_line(aes(y = sens, color = "sensitivity")) + 
+  geom_line(aes(y = spec, color = "specificity"))
+
+cut = perf@alpha.values[[1]][which.max(perf@x.values[[1]]+perf@y.values[[1]])]
+ss = max(perf@x.values[[1]]+perf@y.values[[1]]) # sensitivity + specificity
+
+# confusion matrix
+pred = predict(cv.train, newx = x, s=cv.train$lambda.1se, type="response")
+pred[pred > .3] = 1
+pred[pred < .3] = 0
+confusionMatrix(pred, y)
+
+######### test on holdout sample
+# subset predictors and criterion
+x_test = as.matrix(test[,-c(1,2,3,4,5)])
+y_test = as.double(as.matrix(test[, 5]))
+
+# test on holdout sample
+pred = predict(cv.train, newx = x_test, s=cv.train$lambda.1se, type="response")
+pred[pred > .3] = 1
+pred[pred < .3] = 0
+
+# confusion matrix
+confusionMatrix(pred, y_test)
+
+######### logistic regression
+log = glm(artifact ~ volMean + volSD + euclidian_trans + euclidian_rot + tile_1 + tile_2 + tile_3 + tile_4 + tile_5 + tile_6 + tile_7 + tile_8 + tile_9 + tile_10 + tile_11, family='binomial', data=train)
+
+pred = predict(log, newx = train[,-1], type="response")
+predicted = prediction(pred, y, label.ordering = NULL)
+perf = performance(predicted, measure = "sens", x.measure = "spec")
+perf.df = data.frame(cut=perf@alpha.values[[1]],sens=perf@x.values[[1]],spec=perf@y.values[[1]])
+ggplot(perf.df, aes(spec, sens)) +
+  geom_line()
+
+ggplot(perf.df, aes(x = cut)) +
+  geom_line(aes(y = sens, color = "sensitivity")) + 
+  geom_line(aes(y = spec, color = "specificity")) +
+  geom_vline(xintercept = .03)
+
+pred = predict(log, newx = train[,-1], type="response")
+pred[pred > .3] = 1
+pred[pred < .3] = 0
+confusionMatrix(pred, y)
+```
+
 # apply intensity and rp thresholds
 ```{r}
 auto = joined %>%
@@ -156,7 +261,6 @@ auto = joined %>%
                 ifelse(trash.sd == 0 & (striping == 1 | intensity == 1), "neg.light", NA))))),
          label = ifelse(regexpr(".*", hits.rp) | regexpr(".*", hits.mean) | regexpr(".*", hits.sd), as.character(volume), '')) %>%
   select(subjectID, run, volume, Diff.mean, Diff.sd, volMean, volSD, starts_with("euclidian"), hits.mean, hits.sd, hits.rp, tile, label)
-
 ```
 
 # plot mean intensities
@@ -365,37 +469,59 @@ ggplot(comp, aes(x = volume, y = freqtile_power_c)) +
 # compare hit rates
 ```{r, fig.width=20, fig.height=175}
 # auto thresholding
-table(auto$hits.mean)
-table(auto$hits.sd)
-table(auto$hits.rp)
+auto.tab = auto %>% filter(tile == 1)
+table(auto.tab$hits.mean)
+table(auto.tab$hits.sd)
+table(auto.tab$hits.rp)
 
 # absolute thresholing
-table(test$hits)
+test.tab = test %>% filter(tile == 1)
+table(test.tab$hits)
 
 # SD thresholding
-table(test_diff$hits)
+test_diff.tab = test %>% filter(tile == 1)
+table(test_diff.tab$hits)
 
 # composite
-table(comp$hits)
+comp.tab = comp %>% filter(tile == 1)
+table(comp.tab$hits)
 
-# hits = left_join(test, test_diff, by = c("subjectID", "run", "volume", "tile", "striping")) %>%
-#   left_join(., auto, by = c("subjectID", "run", "volume", "tile")) %>%
-#   select(subjectID, run, volume, tile, euclidian_trans_deriv, striping, hits.x, hits.y, hits.mean, hits.sd, hits.rp) %>%
-#   rename("stripe.absolute" = hits.x,
-#          "stripe.diff" = hits.y,
-#          "auto.intensity.mean" = hits.mean,
-#          "auto.intensity.sd" = hits.sd,
-#          "auto.rp" = hits.rp) %>%
-#   gather(method, hits, c("auto.intensity.mean", "auto.intensity.sd", "auto.rp", "stripe.absolute", "stripe.diff")) %>%
-#   mutate(label = ifelse(regexpr('.*', hits), as.character(volume), ''))
+# compare manually rules v. lasso log. regression
+# recode hits to compate
+comp.tab = comp.tab %>%
+  mutate(hits.tot = ifelse(hits %in% c("hit", "hit.light"), "hit",
+                    ifelse(hits %in% c("neg", "neg.light"), "neg",
+                    ifelse(hits %in% c("pos"), "pos",
+                    ifelse(is.na(hits), "cor.rej", NA)))))
 
-# plot hits
-# hits1 = filter(hits, tile == 1 & subjectID == 102)
-# ggplot(filter(hits, tile == 1), aes(x = volume, y = euclidian_trans_deriv)) +
-#   geom_line(size = .25) +
-#   geom_point(data = subset(hits, !is.na(hits)), aes(color = hits), size = 2.5) +
-#   geom_text(aes(label = label), size = 1.5) +
-#   facet_wrap(~ subjectID + run + method, ncol = 5, scales = "free") +
-#   scale_color_manual(values = c("#3B9AB2","#78B7C5","#9EBE91","#EBCC2A","#F21A00")) +
-#   theme(axis.text.x = element_text(size = 6))
+# re-run lasso on full sample
+x = as.matrix(data[,-c(1,2,3,4,5)])
+y = as.double(as.matrix(data[, 5]))
+lasso = cv.glmnet(x, y, family='binomial', alpha=1, parallel=TRUE, standardize=TRUE, type.measure='auc')
+pred = predict(lasso, newx = x, s=cv.train$lambda.1se, type="response")
+pred[pred > .3] = 1
+pred[pred < .3] = 0
+
+# print tables
+confusionMatrix(pred, y)$table
+table(comp.tab$hits.tot)
+
+```
+
+# plot logistic regression 
+```{r logreg-translation, fig.width=20, fig.height=100}
+data.plot = bind_cols(data, as.data.frame(y), as.data.frame(pred)) %>%
+  mutate(hits = ifelse(y == 1 & `1` == 1, "hit",
+                ifelse(y == 0 & `1` == 1, "pos",
+                ifelse(y == 1 & `1` == 0, "neg", NA))),
+         label = ifelse(regexpr('.*', hits), as.character(volume), ''),
+         hits = as.factor(hits))
+  
+ggplot(data.plot, aes(x = volume, y = euclidian_trans_deriv)) +
+  geom_line(size = .25) +
+  geom_point(data = subset(data.plot, !is.na(hits)), aes(color = hits), size = 2.5) +
+  geom_text(aes(label = label), size = 1.5) +
+  facet_wrap(~ subjectID + run, ncol = 4, scales = "free") +
+  scale_color_manual(values = c("#3B9AB2","#EBCC2A","#F21A00")) +
+  theme(axis.text.x = element_text(size = 6))
 ```

@@ -34,3 +34,6 @@ vignettes/*.pdf
 
 #4d nii
 vids/
+
+# DS_Store
+.DS_Store
