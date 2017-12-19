@@ -2,7 +2,10 @@
 title: "auto-motion test"
 author: "Dani Cosme"
 date: "10/30/2017"
-output: html_document
+output:
+  html_document:
+    toc: true
+    toc_float: true
 ---
 
 ```{r setup, include=FALSE}
@@ -109,14 +112,15 @@ joined = left_join(stripes, coded, by = c("subjectID", "run", "volume")) %>%
          intensity = ifelse(is.na(intensity), 0, intensity))
 ```
 
-# use lasso logistic regression to fit beta weights for each predictor
+# machine learning
+## use lasso logistic regression to fit beta weights for each predictor
 ```{r, logistic-regression}
 # tidy data
 data = joined %>%
   mutate(tile = paste0("tile_",tile),
-         artifact = ifelse(striping > 0 | intensity > 0, 1, 0)) %>%
+         artifact = ifelse(striping > 1 | intensity > 1, 1, 0)) %>%
   spread(tile, freqtile_power) %>%
-  select(-striping, - intensity, -euclidian_rot_deriv, -trash.rp) %>%
+  select(-striping, - intensity, -euclidian_rot_deriv, -trash.rp, -fsl.volume) %>%
   select(subjectID, run, volume, euclidian_trans_deriv, artifact, everything())
 
 # create training and test sets
@@ -126,11 +130,11 @@ train = subset(data, sample == TRUE)
 test  = subset(data, sample == FALSE)
 
 # subset predictors and criterion
-x = as.matrix(train[,-c(1,2,3,4,5)])
-y = as.double(as.matrix(train[, 5]))
+x_train = as.matrix(train[,-c(1,2,3,4,5)])
+y_train = as.double(as.matrix(train[, 5]))
 
 # run xval to determine lambda
-cv.train <- cv.glmnet(x, y, family='binomial', alpha=1, parallel=TRUE, standardize=TRUE, type.measure='auc')
+cv.train <- cv.glmnet(x_train, y_train, family='binomial', alpha=1, parallel=TRUE, standardize=TRUE, type.measure='auc')
 
 plot(cv.train)
 plot(cv.train$glmnet.fit, xvar="lambda", label=TRUE)
@@ -140,10 +144,10 @@ coef(cv.train, s=cv.train$lambda.min)
 coef(cv.train, s=cv.train$lambda.1se)
 
 # test on sample
-pred = predict(cv.train, newx = x, s=cv.train$lambda.1se, type="response")
+pred_train = predict(cv.train, newx = x_train, s=cv.train$lambda.1se, type="response")
 
 # plot cutoff v. accuracy
-predicted = prediction(pred, y, label.ordering = NULL)
+predicted = prediction(pred_train, y_train, label.ordering = NULL)
 perf = performance(predicted, measure = "acc")
 perf.df = data.frame(cut=perf@x.values[[1]],acc=perf@y.values[[1]])
 
@@ -171,10 +175,10 @@ cut = perf@alpha.values[[1]][which.max(perf@x.values[[1]]+perf@y.values[[1]])]
 ss = max(perf@x.values[[1]]+perf@y.values[[1]]) # sensitivity + specificity
 
 # confusion matrix
-pred = predict(cv.train, newx = x, s=cv.train$lambda.1se, type="response")
-pred[pred > .3] = 1
-pred[pred < .3] = 0
-confusionMatrix(pred, y)
+pred_train = predict(cv.train, newx = x_train, s=cv.train$lambda.1se, type="response")
+pred_train[pred_train > .2] = 1
+pred_train[pred_train < .2] = 0
+confusionMatrix(pred_train, y_train)
 
 ######### test on holdout sample
 # subset predictors and criterion
@@ -182,208 +186,37 @@ x_test = as.matrix(test[,-c(1,2,3,4,5)])
 y_test = as.double(as.matrix(test[, 5]))
 
 # test on holdout sample
-pred = predict(cv.train, newx = x_test, s=cv.train$lambda.1se, type="response")
-pred[pred > .3] = 1
-pred[pred < .3] = 0
+pred_test = predict(cv.train, newx = x_test, s=cv.train$lambda.1se, type="response")
+pred_test[pred_test > .2] = 1
+pred_test[pred_test < .2] = 0
 
 # confusion matrix
-confusionMatrix(pred, y_test)
+confusionMatrix(pred_test, y_test)
 
 ######### logistic regression
-log = glm(artifact ~ volMean + volSD + euclidian_trans + euclidian_rot + tile_1 + tile_2 + tile_3 + tile_4 + tile_5 + tile_6 + tile_7 + tile_8 + tile_9 + tile_10 + tile_11, family='binomial', data=train)
-
-pred = predict(log, newx = train[,-1], type="response")
-predicted = prediction(pred, y, label.ordering = NULL)
-perf = performance(predicted, measure = "sens", x.measure = "spec")
-perf.df = data.frame(cut=perf@alpha.values[[1]],sens=perf@x.values[[1]],spec=perf@y.values[[1]])
-ggplot(perf.df, aes(spec, sens)) +
-  geom_line()
-
-ggplot(perf.df, aes(x = cut)) +
-  geom_line(aes(y = sens, color = "sensitivity")) + 
-  geom_line(aes(y = spec, color = "specificity")) +
-  geom_vline(xintercept = .03)
-
-pred = predict(log, newx = train[,-1], type="response")
-pred[pred > .3] = 1
-pred[pred < .3] = 0
-confusionMatrix(pred, y)
+## note: couldn't get predict function to predict test values
+# log = glm(artifact ~ volMean + volSD + euclidian_trans + euclidian_rot + tile_1 + tile_2 + tile_3 + tile_4 + tile_5 + tile_6 + tile_7 + tile_8 + tile_9 + tile_10 + tile_11, family='binomial', data=train)
+# 
+# pred = predict(log, newx = train, type="response")
+# predicted = prediction(pred, y_train, label.ordering = NULL)
+# perf = performance(predicted, measure = "sens", x.measure = "spec")
+# perf.df = data.frame(cut=perf@alpha.values[[1]],sens=perf@x.values[[1]],spec=perf@y.values[[1]])
+# ggplot(perf.df, aes(spec, sens)) +
+#   geom_line()
+# 
+# ggplot(perf.df, aes(x = cut)) +
+#   geom_line(aes(y = sens, color = "sensitivity")) + 
+#   geom_line(aes(y = spec, color = "specificity")) +
+#   geom_vline(xintercept = .03)
+# 
+# pred = predict(log, newx = x_test, type="response")
+# pred[pred > .03] = 1
+# pred[pred < .03] = 0
+# confusionMatrix(pred, y_test)
 ```
 
-# apply intensity and rp thresholds
-```{r}
-auto = joined %>%
-  group_by(subjectID, run) %>%
-  mutate(Diff.mean = volMean - lag(volMean),
-         Diff.sd = volSD - lag(volSD)) %>%
-  filter(tile == 1 | tile == 10) %>%
-  ungroup %>%
-  mutate(meanDiff.mean = mean(Diff.mean, na.rm=TRUE),
-         sdDiff.mean = sd(Diff.mean, na.rm=TRUE),
-         meanDiff.sd = mean(Diff.sd, na.rm=TRUE),
-         sdDiff.sd = sd(Diff.sd, na.rm=TRUE),
-         
-         # code volumes above mean thresholds as trash
-         trash.mean = ifelse(Diff.mean > (meanDiff.mean + 3*sdDiff.mean) | Diff.mean < (meanDiff.mean - 1.5*sdDiff.mean), 1, 0),
-         trash.sd = ifelse(Diff.sd > (meanDiff.sd + 3*sdDiff.sd) | Diff.sd < (meanDiff.sd - 3*sdDiff.sd), 1, 0),
-         
-         # code volumes with more than +/- .3mm translation in Euclidian distance
-         trash.rp = ifelse(euclidian_trans_deriv > .3 | euclidian_trans_deriv < -.3, 1, trash.rp),
-         # code volumes with more than +/- .3mm translation in Euclidian distance
-         trash.rp = ifelse(euclidian_rot_deriv > .3 | euclidian_rot_deriv < -.3, 1, trash.rp),
-         
-         # recode as trash if volume behind and in front are both marked as trash
-         trash.mean = ifelse(trash.mean == 0 & lag(trash.mean) == 1 & lead(trash.mean) == 1, 1, trash.mean),
-         trash.sd = ifelse(trash.sd == 0 & lag(trash.sd) == 1 & lead(trash.sd) == 1, 1, trash.sd),
-         trash.rp = ifelse(trash.rp == 0 & lag(trash.rp) == 1 & lead(trash.rp) == 1, 1, trash.rp),
-         
-         # code first volume as trash if second volume is trash
-         trash.mean = ifelse(volume == 1 & lead(trash.mean) == 1, 1, trash.mean),
-         trash.sd = ifelse(volume == 1 & lead(trash.sd) == 1, 1, trash.sd),
-         trash.rp = ifelse(volume == 1 & lead(trash.rp) == 1, 1, trash.rp)) %>%
-  
-  mutate(trash.mean = ifelse(is.na(trash.mean), 0, trash.mean),
-         trash.sd = ifelse(is.na(trash.sd), 0, trash.sd),
-         hits.rp = ifelse(trash.rp == 1 & (striping == 2 | intensity == 2), "hit",
-                ifelse(trash.rp == 1 & (striping == 1 | intensity == 1), "hit.light",
-                ifelse(trash.rp == 1 & (striping == 0 | intensity == 0), "pos",
-                ifelse(trash.rp == 0 & (striping == 2 | intensity == 2), "neg",
-                ifelse(trash.rp == 0 & (striping == 1 | intensity == 1), "neg.light", NA))))),
-         hits.mean = ifelse(trash.mean == 1 & (striping == 2 | intensity == 2), "hit",
-                ifelse(trash.mean == 1 & (striping == 1 | intensity == 1), "hit.light",
-                ifelse(trash.mean == 1 & (striping == 0 | intensity == 0), "pos",
-                ifelse(trash.mean == 0 & (striping == 2 | intensity == 2), "neg",
-                ifelse(trash.mean == 0 & (striping == 1 | intensity == 1), "neg.light", NA))))),
-         hits.sd = ifelse(trash.sd == 1 & (striping == 2 | intensity == 2), "hit",
-                ifelse(trash.sd == 1 & (striping == 1 | intensity == 1), "hit.light",
-                ifelse(trash.sd == 1 & (striping == 0 | intensity == 0), "pos",
-                ifelse(trash.sd == 0 & (striping == 2 | intensity == 2), "neg",
-                ifelse(trash.sd == 0 & (striping == 1 | intensity == 1), "neg.light", NA))))),
-         label = ifelse(regexpr(".*", hits.rp) | regexpr(".*", hits.mean) | regexpr(".*", hits.sd), as.character(volume), '')) %>%
-  select(subjectID, run, volume, Diff.mean, Diff.sd, volMean, volSD, starts_with("euclidian"), hits.mean, hits.sd, hits.rp, tile, label)
-```
-
-# plot mean intensities
-```{r auto-mean, fig.width=20, fig.height=100}
-ggplot(filter(auto, tile == 1), aes(x = volume, y = volMean)) +
-  geom_line(size = .25) +
-  geom_point(data = subset(auto, !is.na(hits.mean)), aes(color = hits.mean), size = 2.5) +
-  geom_text(aes(label = label), size = 2, position = position_nudge(x = 1.5, y = .000025)) +
-  facet_wrap(~ subjectID + run, ncol = 4, scales = "free") +
-  scale_color_manual(values = c("#3B9AB2","#78B7C5","#9EBE91","#EBCC2A","#F21A00")) +
-  #geom_hline(data = thresholds, aes(yintercept = upper), color = "#F21A00") +
-  #geom_hline(data = thresholds, aes(yintercept = lower), color = "#F21A00") +
-  theme(axis.text.x = element_text(size = 6))
-```
-
-# plot sd intensities
-```{r auto-sd, fig.width=20, fig.height=100}
-ggplot(filter(auto, tile == 1), aes(x = volume, y = volSD)) +
-  geom_line(size = .25) +
-  geom_point(data = subset(auto, !is.na(hits.sd)), aes(color = hits.sd), size = 2.5) +
-  geom_text(aes(label = label), size = 2, position = position_nudge(x = 1.5, y = .000025)) +
-  facet_wrap(~ subjectID + run, ncol = 4, scales = "free") +
-  scale_color_manual(values = c("#3B9AB2","#78B7C5","#9EBE91","#EBCC2A","#F21A00")) +
-  #geom_hline(data = thresholds, aes(yintercept = upper), color = "#F21A00") +
-  #geom_hline(data = thresholds, aes(yintercept = lower), color = "#F21A00") +
-  theme(axis.text.x = element_text(size = 6))
-```
-
-# plot translation
-```{r auto-translation, fig.width=20, fig.height=100}
-ggplot(filter(auto, tile == 1), aes(x = volume, y = euclidian_trans_deriv)) +
-  geom_line(size = .25) +
-  geom_point(data = subset(auto, !is.na(hits.rp)), aes(color = hits.rp), size = 2.5) +
-  geom_text(aes(label = label), size = 2, position = position_nudge(x = 1.5, y = .000025)) +
-  facet_wrap(~ subjectID + run, ncol = 4, scales = "free") +
-  scale_color_manual(values = c("#3B9AB2","#78B7C5","#9EBE91","#EBCC2A","#F21A00")) +
-  #geom_hline(data = thresholds, aes(yintercept = upper), color = "#F21A00") +
-  #geom_hline(data = thresholds, aes(yintercept = lower), color = "#F21A00") +
-  theme(axis.text.x = element_text(size = 6))
-```
-
-# apply absolute thresholds and plot
-```{r stripe-absolute, fig.width=20, fig.height=100}
-test = joined %>%
-  group_by(subjectID, run, tile) %>%
-  mutate(freqtile_power_c = freqtile_power - mean(freqtile_power)) %>%
-  ungroup() %>%
-  filter(tile == 1 | tile == 10) %>%
-  select(-freqtile_power) %>%
-  spread(tile,freqtile_power_c) %>%
-  mutate(red_zone = ifelse(`1` < -.03 & `10` > .0002, TRUE, FALSE),
-         red_zone = ifelse(lead(red_zone) == TRUE, TRUE, red_zone),
-         hits = ifelse(red_zone == TRUE & (striping == 2 | intensity == 2), "hit",
-                ifelse(red_zone == TRUE & (striping == 1 | intensity == 1), "hit.light",
-                ifelse(red_zone == TRUE & (striping == 0 | intensity == 0), "pos",
-                ifelse(red_zone == FALSE & (striping == 2 | intensity == 2), "neg",
-                ifelse(red_zone == FALSE & (striping == 1 | intensity == 1), "neg.light", NA))))),
-         label = ifelse(hits, as.character(volume), ''),
-         hits = as.factor(hits)) %>%
-  gather(tile, freqtile_power_c, c(`1`, `10`)) %>%
-  mutate(tile = as.numeric(tile))
-
-thresholds = test %>% select(subjectID, run, tile) %>% unique(.) %>% mutate(y = ifelse(tile == 1, -.03, .00025))
-
-ggplot(test, aes(x = volume, y = freqtile_power_c)) +
-  geom_line(size = .25) +
-  geom_point(data = subset(test, !is.na(hits)), aes(color = hits), size = 2.5) +
-  geom_text(aes(label = label), size = 2, position = position_nudge(x = 1.5, y = .000025)) +
-  facet_wrap(~subjectID + run + tile, scales = "free", ncol = 4) +
-  scale_color_manual(values = c("#3B9AB2","#78B7C5","#9EBE91","#EBCC2A","#F21A00")) +
-  geom_hline(data = thresholds, aes(yintercept = y), color = "#F21A00") +
-  theme(axis.text.x = element_text(size = 6))
-```
-
-# apply threshold using SDs and plot
-```{r stripe-diff, fig.width=20, fig.height=100}
-test_diff = joined %>%
-  group_by(subjectID, run, tile) %>%
-  mutate(freqtile_power_c = freqtile_power - mean(freqtile_power),
-         diff = freqtile_power - lag(freqtile_power)) %>%
-  select(-freqtile_power, -freqtile_power_c) %>%
-  filter(tile == 1 | tile == 10) %>%
-  spread(tile,diff) %>%
-  ungroup() %>%
-  mutate(upper_1 = (mean(`1`,na.rm=TRUE) + 1.25*sd(`1`, na.rm=TRUE)),
-         lower_1 = (mean(`1`,na.rm=TRUE) - 1.25*sd(`1`, na.rm=TRUE)),
-         upper_10 = (mean(`10`,na.rm=TRUE) + 1.25*sd(`10`, na.rm=TRUE)),
-         lower_10 = (mean(`10`,na.rm=TRUE) - 1.25*sd(`10`, na.rm=TRUE))) %>%
-  mutate(red_zone_1 = ifelse(`1` > upper_1 | `1` < lower_1, TRUE, FALSE),
-         red_zone_10 = ifelse(`10` > upper_10 | `10` < lower_10, TRUE, FALSE),
-         red_zone = ifelse(red_zone_1 == TRUE & red_zone_10 == TRUE, TRUE, FALSE),
-         red_zone = ifelse(lead(red_zone) == TRUE, TRUE, red_zone),
-         red_zone = ifelse(is.na(red_zone), 0, red_zone),
-         hits = ifelse(red_zone == TRUE & (striping == 2 | intensity == 2), "hit",
-                ifelse(red_zone == TRUE & (striping == 1 | intensity == 1), "hit.light",
-                ifelse(red_zone == TRUE & (striping == 0 | intensity == 0), "pos",
-                ifelse(red_zone == FALSE & (striping == 2 | intensity == 2), "neg",
-                ifelse(red_zone == FALSE & (striping == 1 | intensity == 1), "neg.light", NA))))),
-         label = ifelse(hits, as.character(volume), ''),
-         hits = as.factor(hits)) %>%
-  gather(tile, diff, c(`1`, `10`)) %>%
-  mutate(tile = as.numeric(tile))
-
-thresholds = test_diff %>% 
-  select(subjectID, run, tile, diff) %>% 
-  group_by(tile) %>%
-  mutate(upper = mean(diff, na.rm=TRUE) + 1*sd(diff, na.rm=TRUE),
-         lower = mean(diff, na.rm=TRUE) - 1*sd(diff, na.rm=TRUE)) %>%
-  select(-diff) %>%
-  unique(.)
-
-ggplot(test_diff, aes(x = volume, y = diff)) +
-  geom_line(size = .25) +
-  geom_point(data = subset(test_diff, !is.na(hits)), aes(color = hits), size = 2.5) +
-  geom_text(aes(label = label), size = 2, position = position_nudge(x = 1.5, y = .000025)) +
-  facet_wrap(~ subjectID + run + tile, ncol = 4, scales = "free") +
-  scale_color_manual(values = c("#3B9AB2","#78B7C5","#9EBE91","#EBCC2A","#F21A00")) +
-  geom_hline(data = thresholds, aes(yintercept = upper), color = "#F21A00") +
-  geom_hline(data = thresholds, aes(yintercept = lower), color = "#F21A00") +
-  theme(axis.text.x = element_text(size = 6))
-```
-
-# make composite
+# original auto-motion
+## make composite of all indicators
 ```{r, fig.width=20, fig.height=100}
 comp = joined %>%
   filter(tile == 1 | tile == 10) %>%
@@ -399,10 +232,15 @@ comp = joined %>%
          sdDiff.sd = sd(Diff.sd, na.rm=TRUE),
          
          # code volumes above mean thresholds as trash
-         trash.mean = ifelse(Diff.mean > (meanDiff.mean + 2*sdDiff.mean) | Diff.mean < (meanDiff.mean - 2*sdDiff.mean), 1, 0),
-         trash.sd = ifelse(Diff.sd > (meanDiff.sd + 2*sdDiff.sd) | Diff.sd < (meanDiff.sd - 2*sdDiff.sd), 1, 0),
+         upper.mean = meanDiff.mean + 2*sdDiff.mean,
+         lower.mean = meanDiff.mean - 2*sdDiff.mean,
+         trash.mean = ifelse(Diff.mean > upper.mean | Diff.mean < lower.mean, 1, 0),
          
-         # code volumes with more than +/- .3mm translation or in Euclidian distance
+         upper.sd = meanDiff.sd + 2*sdDiff.sd,
+         lower.sd = meanDiff.sd - 2*sdDiff.sd,
+         trash.sd = ifelse(Diff.sd > upper.sd | Diff.sd < lower.sd, 1, 0),
+         
+         # code volumes with more than +/- .25mm translation or rotation in Euclidian distance
          trash.rp.tr = ifelse(euclidian_trans_deriv > .25 | euclidian_trans_deriv < -.25, 1, trash.rp),
          trash.rp.rot = ifelse(euclidian_rot_deriv > .25 | euclidian_rot_deriv < -.25, 1, trash.rp)) %>%
   select(-meanDiff.mean, -meanDiff.sd, -sdDiff.mean, -sdDiff.sd) %>%
@@ -417,99 +255,161 @@ comp = joined %>%
   
   # combine trash
   mutate(trash.combined = ifelse(trash.stripe == 1, 1, 0),
-         trash.combined = ifelse((trash.rp.tr + trash.rp.rot + trash.mean + trash.sd) > 2, 1, trash.combined),
-         #trash.combined = ifelse((trash.mean + trash.sd) == 2, 1, trash.combined),
-         trash.combined = ifelse(lead(trash.combined) == TRUE, TRUE, trash.combined)) %>%
+         trash.combined = ifelse((trash.rp.tr + trash.rp.rot + trash.mean + trash.sd) > 1, 1, trash.combined)) %>%
+         #trash.combined = ifelse(lead(trash.combined) == TRUE, TRUE, trash.combined)) %>%
   
+  # recode as trash if volume behind and in front are both marked as trash
+  mutate(trash.combined = ifelse(trash.combined == 0 & lag(trash.combined) == 1 & lead(trash.combined) == 1, 1, trash.combined)) %>%
+         
+  # code first volume as trash if second volume is trash
+  mutate(trash.combined = ifelse(volume == 1 & lead(trash.combined) == 1, 1, trash.combined)) %>%
+
   # code hits
   mutate(hits = ifelse(trash.combined == 1 & (striping == 2 | intensity == 2), "hit",
-                ifelse(trash.combined == 1 & (striping == 1 | intensity == 1), "hit.light",
-                ifelse(trash.combined == 1 & (striping == 0 | intensity == 0), "pos",
+                #ifelse(trash.combined == 1 & (striping == 1 | intensity == 1), "hit.light",
                 ifelse(trash.combined == 0 & (striping == 2 | intensity == 2), "neg",
-                ifelse(trash.combined == 0 & (striping == 1 | intensity == 1), "neg.light", NA))))),
+                #ifelse(trash.combined == 0 & (striping == 1 | intensity == 1), "neg.light",
+                ifelse(trash.combined == 1 & (striping == 0 | intensity == 0), "pos", NA))),
          label = ifelse(regexpr('.*', hits), as.character(volume), ''),
          hits = as.factor(hits)) %>%
   gather(tile, freqtile_power_c, c(`1`, `10`)) %>%
   mutate(tile = as.numeric(tile))
 ```
 
-# plot  composite, y = translation derivative
+# compare hit rates
+## include light trials
+### training data
+```{r}
+# select only one set of observations and code any artifact as 1
+comp.tab = comp %>% 
+  filter(tile == 1) %>%
+  mutate(artifact = ifelse(striping > 0 | intensity > 0, 1, 0),
+         hits.tot = ifelse(hits %in% c("hit", "hit.light"), "hit",
+                    ifelse(hits %in% c("neg", "neg.light"), "neg",
+                    ifelse(hits %in% c("pos"), "pos",
+                    ifelse(is.na(hits), "cor.rej", NA)))))
+
+# separate into training and test runs
+set.seed(101) 
+comp.sample = sample.split(comp.tab$artifact, SplitRatio = .75)
+comp.train = subset(comp.tab, sample == TRUE)
+comp.test  = subset(comp.tab, sample == FALSE)
+
+# machine learning
+confusionMatrix(pred_train, y_train)$table
+confusionMatrix(pred_train, y_train)$overall[1]
+confusionMatrix(pred_train, y_train)$byClass[11]
+
+# manual 
+table(comp.train$hits.tot)
+#table(comp.train$hits)
+
+cor.rej = table(comp.train$hits.tot)[[1]]
+hit = table(comp.train$hits.tot)[[2]]
+neg = table(comp.train$hits.tot)[[3]]
+pos = table(comp.train$hits.tot)[[4]]
+total = cor.rej + hit + neg + pos
+
+sprintf('Accuracy: %s', round((cor.rej + hit) / total,2))
+
+# balanced accuracy
+sprintf('Balanced accuracy: %s', round(((cor.rej / (cor.rej + pos)) + (hit / (hit + neg))) / 2,2))
+```
+
+### test data
+```{r}
+# machine learning
+confusionMatrix(pred_test, y_test)$table
+confusionMatrix(pred_test, y_test)$overall[1]
+confusionMatrix(pred_test, y_test)$byClass[11]
+
+# manual 
+table(comp.test$hits.tot)
+#table(comp.test$hits)
+
+cor.rej = table(comp.test$hits.tot)[[1]]
+hit = table(comp.test$hits.tot)[[2]]
+neg = table(comp.test$hits.tot)[[3]]
+pos = table(comp.test$hits.tot)[[4]]
+total = cor.rej + hit + neg + pos
+
+sprintf('Accuracy: %s', round((cor.rej + hit) / total,2))
+
+# balanced accuracy
+sprintf('Balanced accuracy: %s', round(((cor.rej / (cor.rej + pos)) + (hit / (hit + neg))) / 2,2))
+```
+
+# plot composite
+## y = translation derivative
 ```{r comp-translation, fig.width=20, fig.height=100}
+thresholds = comp %>% 
+  filter(tile == 1) %>%
+  select(subjectID, run) %>% 
+  unique(.) %>% 
+  mutate(upper = .25,
+         lower = -.25)
+
 ggplot(filter(comp, tile == 1), aes(x = volume, y = euclidian_trans_deriv)) +
   geom_line(size = .25) +
   geom_point(data = subset(comp, !is.na(hits)), aes(color = hits), size = 2.5) +
   geom_text(aes(label = label), size = 1.5) +
   facet_wrap(~ subjectID + run, ncol = 4, scales = "free") +
-  scale_color_manual(values = c("#3B9AB2","#78B7C5","#9EBE91","#EBCC2A","#F21A00")) +
+  scale_color_manual(values = c("#3B9AB2","#EBCC2A","#F21A00")) +
+  #scale_color_manual(values = c("#3B9AB2","#78B7C5","#9EBE91","#EBCC2A","#F21A00")) +
+  geom_hline(data = thresholds, aes(yintercept = upper), color = "#F21A00") +
+  geom_hline(data = thresholds, aes(yintercept = lower), color = "#F21A00") +
   theme(axis.text.x = element_text(size = 6))
 ```
 
-# plot  composite, y = mean intensity
+## y = mean intensity
 ```{r comp-mean, fig.width=20, fig.height=100}
-ggplot(filter(comp, tile == 1), aes(x = volume, y = volMean)) +
+thresholds = comp %>% 
+  filter(tile == 1) %>%
+  select(subjectID, run, upper.mean, lower.mean) %>% 
+  unique(.) %>%
+  mutate(upper = upper.mean,
+         lower = lower.mean)
+
+ggplot(filter(comp, tile == 1), aes(x = volume, y = Diff.mean)) +
   geom_line(size = .25) +
   geom_point(data = subset(comp, !is.na(hits)), aes(color = hits), size = 2.5) +
   geom_text(aes(label = label), size = 1.5) +
   facet_wrap(~ subjectID + run, ncol = 4, scales = "free") +
-  scale_color_manual(values = c("#3B9AB2","#78B7C5","#9EBE91","#EBCC2A","#F21A00")) +
+  scale_color_manual(values = c("#3B9AB2","#EBCC2A","#F21A00")) +
+  #scale_color_manual(values = c("#3B9AB2","#78B7C5","#9EBE91","#EBCC2A","#F21A00")) +
+  geom_hline(data = thresholds, aes(yintercept = upper), color = "#F21A00") +
+  geom_hline(data = thresholds, aes(yintercept = lower), color = "#F21A00") +
   theme(axis.text.x = element_text(size = 6))
 ```
 
-# plot  composite, y = freqtile power
+## y = freqtile power
 ```{r comp-freq, fig.width=20, fig.height=100}
+thresholds = comp %>% 
+  select(subjectID, run, tile) %>% 
+  unique(.) %>% 
+  mutate(y = ifelse(tile == 1, -.035, .00025))
+
 ggplot(comp, aes(x = volume, y = freqtile_power_c)) +
   geom_line(size = .25) +
   geom_point(data = subset(comp, !is.na(hits)), aes(color = hits), size = 2.5) +
   geom_text(aes(label = label), size = 1.5) +
   facet_wrap(~ subjectID + run + tile, ncol = 4, scales = "free") +
-  scale_color_manual(values = c("#3B9AB2","#78B7C5","#9EBE91","#EBCC2A","#F21A00")) +
+  scale_color_manual(values = c("#3B9AB2","#EBCC2A","#F21A00")) +
+  #scale_color_manual(values = c("#3B9AB2","#78B7C5","#9EBE91","#EBCC2A","#F21A00")) +
+  geom_hline(data = thresholds, aes(yintercept = y), color = "#F21A00") +
   theme(axis.text.x = element_text(size = 6))
 ```
 
-# compare hit rates
-```{r, fig.width=20, fig.height=175}
-# auto thresholding
-auto.tab = auto %>% filter(tile == 1)
-table(auto.tab$hits.mean)
-table(auto.tab$hits.sd)
-table(auto.tab$hits.rp)
-
-# absolute thresholing
-test.tab = test %>% filter(tile == 1)
-table(test.tab$hits)
-
-# SD thresholding
-test_diff.tab = test %>% filter(tile == 1)
-table(test_diff.tab$hits)
-
-# composite
-comp.tab = comp %>% filter(tile == 1)
-table(comp.tab$hits)
-
-# compare manually rules v. lasso log. regression
-# recode hits to compate
-comp.tab = comp.tab %>%
-  mutate(hits.tot = ifelse(hits %in% c("hit", "hit.light"), "hit",
-                    ifelse(hits %in% c("neg", "neg.light"), "neg",
-                    ifelse(hits %in% c("pos"), "pos",
-                    ifelse(is.na(hits), "cor.rej", NA)))))
-
+# plot logistic regression
+## y = translation derivative
+```{r logreg-translation, fig.width=20, fig.height=100}
 # re-run lasso on full sample
 x = as.matrix(data[,-c(1,2,3,4,5)])
 y = as.double(as.matrix(data[, 5]))
-lasso = cv.glmnet(x, y, family='binomial', alpha=1, parallel=TRUE, standardize=TRUE, type.measure='auc')
-pred = predict(lasso, newx = x, s=cv.train$lambda.1se, type="response")
+pred = predict(cv.train, newx = x, s=cv.train$lambda.1se, type="response")
 pred[pred > .3] = 1
 pred[pred < .3] = 0
 
-# print tables
-confusionMatrix(pred, y)$table
-table(comp.tab$hits.tot)
-
-```
-
-# plot logistic regression 
-```{r logreg-translation, fig.width=20, fig.height=100}
 data.plot = bind_cols(data, as.data.frame(y), as.data.frame(pred)) %>%
   mutate(hits = ifelse(y == 1 & `1` == 1, "hit",
                 ifelse(y == 0 & `1` == 1, "pos",
@@ -525,3 +425,185 @@ ggplot(data.plot, aes(x = volume, y = euclidian_trans_deriv)) +
   scale_color_manual(values = c("#3B9AB2","#EBCC2A","#F21A00")) +
   theme(axis.text.x = element_text(size = 6))
 ```
+
+# indicators separately 
+## apply intensity and rp thresholds
+```{r}
+# auto = joined %>%
+#   group_by(subjectID, run) %>%
+#   mutate(Diff.mean = volMean - lag(volMean),
+#          Diff.sd = volSD - lag(volSD)) %>%
+#   filter(tile == 1 | tile == 10) %>%
+#   ungroup %>%
+#   mutate(meanDiff.mean = mean(Diff.mean, na.rm=TRUE),
+#          sdDiff.mean = sd(Diff.mean, na.rm=TRUE),
+#          meanDiff.sd = mean(Diff.sd, na.rm=TRUE),
+#          sdDiff.sd = sd(Diff.sd, na.rm=TRUE),
+#          
+#          # code volumes above mean thresholds as trash
+#          trash.mean = ifelse(Diff.mean > (meanDiff.mean + 3*sdDiff.mean) | Diff.mean < (meanDiff.mean - 1.5*sdDiff.mean), 1, 0),
+#          trash.sd = ifelse(Diff.sd > (meanDiff.sd + 3*sdDiff.sd) | Diff.sd < (meanDiff.sd - 3*sdDiff.sd), 1, 0),
+#          
+#          # code volumes with more than +/- .3mm translation in Euclidian distance
+#          trash.rp = ifelse(euclidian_trans_deriv > .3 | euclidian_trans_deriv < -.3, 1, trash.rp),
+#          # code volumes with more than +/- .3mm translation in Euclidian distance
+#          trash.rp = ifelse(euclidian_rot_deriv > .3 | euclidian_rot_deriv < -.3, 1, trash.rp),
+#          
+#          # recode as trash if volume behind and in front are both marked as trash
+#          trash.mean = ifelse(trash.mean == 0 & lag(trash.mean) == 1 & lead(trash.mean) == 1, 1, trash.mean),
+#          trash.sd = ifelse(trash.sd == 0 & lag(trash.sd) == 1 & lead(trash.sd) == 1, 1, trash.sd),
+#          trash.rp = ifelse(trash.rp == 0 & lag(trash.rp) == 1 & lead(trash.rp) == 1, 1, trash.rp),
+#          
+#          # code first volume as trash if second volume is trash
+#          trash.mean = ifelse(volume == 1 & lead(trash.mean) == 1, 1, trash.mean),
+#          trash.sd = ifelse(volume == 1 & lead(trash.sd) == 1, 1, trash.sd),
+#          trash.rp = ifelse(volume == 1 & lead(trash.rp) == 1, 1, trash.rp)) %>%
+#   
+#   mutate(trash.mean = ifelse(is.na(trash.mean), 0, trash.mean),
+#          trash.sd = ifelse(is.na(trash.sd), 0, trash.sd),
+#          hits.rp = ifelse(trash.rp == 1 & (striping == 2 | intensity == 2), "hit",
+#                 ifelse(trash.rp == 1 & (striping == 1 | intensity == 1), "hit.light",
+#                 ifelse(trash.rp == 1 & (striping == 0 | intensity == 0), "pos",
+#                 ifelse(trash.rp == 0 & (striping == 2 | intensity == 2), "neg",
+#                 ifelse(trash.rp == 0 & (striping == 1 | intensity == 1), "neg.light", NA))))),
+#          hits.mean = ifelse(trash.mean == 1 & (striping == 2 | intensity == 2), "hit",
+#                 ifelse(trash.mean == 1 & (striping == 1 | intensity == 1), "hit.light",
+#                 ifelse(trash.mean == 1 & (striping == 0 | intensity == 0), "pos",
+#                 ifelse(trash.mean == 0 & (striping == 2 | intensity == 2), "neg",
+#                 ifelse(trash.mean == 0 & (striping == 1 | intensity == 1), "neg.light", NA))))),
+#          hits.sd = ifelse(trash.sd == 1 & (striping == 2 | intensity == 2), "hit",
+#                 ifelse(trash.sd == 1 & (striping == 1 | intensity == 1), "hit.light",
+#                 ifelse(trash.sd == 1 & (striping == 0 | intensity == 0), "pos",
+#                 ifelse(trash.sd == 0 & (striping == 2 | intensity == 2), "neg",
+#                 ifelse(trash.sd == 0 & (striping == 1 | intensity == 1), "neg.light", NA))))),
+#          label = ifelse(regexpr(".*", hits.rp) | regexpr(".*", hits.mean) | regexpr(".*", hits.sd), as.character(volume), '')) %>%
+#   select(subjectID, run, volume, Diff.mean, Diff.sd, volMean, volSD, starts_with("euclidian"), hits.mean, hits.sd, hits.rp, tile, label)
+```
+
+## apply absolute thresholds and plot
+```{r stripe-absolute, fig.width=20, fig.height=100}
+# test = joined %>%
+#   group_by(subjectID, run, tile) %>%
+#   mutate(freqtile_power_c = freqtile_power - mean(freqtile_power)) %>%
+#   ungroup() %>%
+#   filter(tile == 1 | tile == 10) %>%
+#   select(-freqtile_power) %>%
+#   spread(tile,freqtile_power_c) %>%
+#   mutate(red_zone = ifelse(`1` < -.03 & `10` > .0002, TRUE, FALSE),
+#          red_zone = ifelse(lead(red_zone) == TRUE, TRUE, red_zone),
+#          hits = ifelse(red_zone == TRUE & (striping == 2 | intensity == 2), "hit",
+#                 ifelse(red_zone == TRUE & (striping == 1 | intensity == 1), "hit.light",
+#                 ifelse(red_zone == TRUE & (striping == 0 | intensity == 0), "pos",
+#                 ifelse(red_zone == FALSE & (striping == 2 | intensity == 2), "neg",
+#                 ifelse(red_zone == FALSE & (striping == 1 | intensity == 1), "neg.light", NA))))),
+#          label = ifelse(hits, as.character(volume), ''),
+#          hits = as.factor(hits)) %>%
+#   gather(tile, freqtile_power_c, c(`1`, `10`)) %>%
+#   mutate(tile = as.numeric(tile))
+```
+
+## apply threshold using SDs and plot
+```{r stripe-diff, fig.width=20, fig.height=100}
+# test_diff = joined %>%
+#   group_by(subjectID, run, tile) %>%
+#   mutate(freqtile_power_c = freqtile_power - mean(freqtile_power),
+#          diff = freqtile_power - lag(freqtile_power)) %>%
+#   select(-freqtile_power, -freqtile_power_c) %>%
+#   filter(tile == 1 | tile == 10) %>%
+#   spread(tile,diff) %>%
+#   ungroup() %>%
+#   mutate(upper_1 = (mean(`1`,na.rm=TRUE) + 1.25*sd(`1`, na.rm=TRUE)),
+#          lower_1 = (mean(`1`,na.rm=TRUE) - 1.25*sd(`1`, na.rm=TRUE)),
+#          upper_10 = (mean(`10`,na.rm=TRUE) + 1.25*sd(`10`, na.rm=TRUE)),
+#          lower_10 = (mean(`10`,na.rm=TRUE) - 1.25*sd(`10`, na.rm=TRUE))) %>%
+#   mutate(red_zone_1 = ifelse(`1` > upper_1 | `1` < lower_1, TRUE, FALSE),
+#          red_zone_10 = ifelse(`10` > upper_10 | `10` < lower_10, TRUE, FALSE),
+#          red_zone = ifelse(red_zone_1 == TRUE & red_zone_10 == TRUE, TRUE, FALSE),
+#          red_zone = ifelse(lead(red_zone) == TRUE, TRUE, red_zone),
+#          red_zone = ifelse(is.na(red_zone), 0, red_zone),
+#          hits = ifelse(red_zone == TRUE & (striping == 2 | intensity == 2), "hit",
+#                 ifelse(red_zone == TRUE & (striping == 1 | intensity == 1), "hit.light",
+#                 ifelse(red_zone == TRUE & (striping == 0 | intensity == 0), "pos",
+#                 ifelse(red_zone == FALSE & (striping == 2 | intensity == 2), "neg",
+#                 ifelse(red_zone == FALSE & (striping == 1 | intensity == 1), "neg.light", NA))))),
+#          label = ifelse(hits, as.character(volume), ''),
+#          hits = as.factor(hits)) %>%
+#   gather(tile, diff, c(`1`, `10`)) %>%
+#   mutate(tile = as.numeric(tile))
+```
+
+# plot
+## mean intensities
+```{r auto-mean, fig.width=20, fig.height=100}
+# ggplot(filter(auto, tile == 1), aes(x = volume, y = volMean)) +
+#   geom_line(size = .25) +
+#   geom_point(data = subset(auto, !is.na(hits.mean)), aes(color = hits.mean), size = 2.5) +
+#   geom_text(aes(label = label), size = 2, position = position_nudge(x = 1.5, y = .000025)) +
+#   facet_wrap(~ subjectID + run, ncol = 4, scales = "free") +
+#   scale_color_manual(values = c("#3B9AB2","#78B7C5","#9EBE91","#EBCC2A","#F21A00")) +
+#   #geom_hline(data = thresholds, aes(yintercept = upper), color = "#F21A00") +
+#   #geom_hline(data = thresholds, aes(yintercept = lower), color = "#F21A00") +
+#   theme(axis.text.x = element_text(size = 6))
+```
+
+## sd intensities
+```{r auto-sd, fig.width=20, fig.height=100}
+# ggplot(filter(auto, tile == 1), aes(x = volume, y = volSD)) +
+#   geom_line(size = .25) +
+#   geom_point(data = subset(auto, !is.na(hits.sd)), aes(color = hits.sd), size = 2.5) +
+#   geom_text(aes(label = label), size = 2, position = position_nudge(x = 1.5, y = .000025)) +
+#   facet_wrap(~ subjectID + run, ncol = 4, scales = "free") +
+#   scale_color_manual(values = c("#3B9AB2","#78B7C5","#9EBE91","#EBCC2A","#F21A00")) +
+#   #geom_hline(data = thresholds, aes(yintercept = upper), color = "#F21A00") +
+#   #geom_hline(data = thresholds, aes(yintercept = lower), color = "#F21A00") +
+#   theme(axis.text.x = element_text(size = 6))
+```
+
+## translation
+```{r auto-translation, fig.width=20, fig.height=100}
+# ggplot(filter(auto, tile == 1), aes(x = volume, y = euclidian_trans_deriv)) +
+#   geom_line(size = .25) +
+#   geom_point(data = subset(auto, !is.na(hits.rp)), aes(color = hits.rp), size = 2.5) +
+#   geom_text(aes(label = label), size = 2, position = position_nudge(x = 1.5, y = .000025)) +
+#   facet_wrap(~ subjectID + run, ncol = 4, scales = "free") +
+#   scale_color_manual(values = c("#3B9AB2","#78B7C5","#9EBE91","#EBCC2A","#F21A00")) +
+#   #geom_hline(data = thresholds, aes(yintercept = upper), color = "#F21A00") +
+#   #geom_hline(data = thresholds, aes(yintercept = lower), color = "#F21A00") +
+#   theme(axis.text.x = element_text(size = 6))
+```
+
+## freqtile power
+```{r}
+# thresholds = test %>% select(subjectID, run, tile) %>% unique(.) %>% mutate(y = ifelse(tile == 1, -.03, .0002))
+# 
+# ggplot(test, aes(x = volume, y = freqtile_power_c)) +
+#   geom_line(size = .25) +
+#   geom_point(data = subset(test, !is.na(hits)), aes(color = hits), size = 2.5) +
+#   geom_text(aes(label = label), size = 2, position = position_nudge(x = 1.5, y = .000025)) +
+#   facet_wrap(~subjectID + run + tile, scales = "free", ncol = 4) +
+#   scale_color_manual(values = c("#3B9AB2","#78B7C5","#9EBE91","#EBCC2A","#F21A00")) +
+#   geom_hline(data = thresholds, aes(yintercept = y), color = "#F21A00") +
+#   theme(axis.text.x = element_text(size = 6))
+```
+
+## freqtile SD 
+```{r}
+# thresholds = test_diff %>% 
+#   select(subjectID, run, tile, diff) %>% 
+#   group_by(tile) %>%
+#   mutate(upper = mean(diff, na.rm=TRUE) + 1*sd(diff, na.rm=TRUE),
+#          lower = mean(diff, na.rm=TRUE) - 1*sd(diff, na.rm=TRUE)) %>%
+#   select(-diff) %>%
+#   unique(.)
+# 
+# ggplot(test_diff, aes(x = volume, y = diff)) +
+#   geom_line(size = .25) +
+#   geom_point(data = subset(test_diff, !is.na(hits)), aes(color = hits), size = 2.5) +
+#   geom_text(aes(label = label), size = 2, position = position_nudge(x = 1.5, y = .000025)) +
+#   facet_wrap(~ subjectID + run + tile, ncol = 4, scales = "free") +
+#   scale_color_manual(values = c("#3B9AB2","#78B7C5","#9EBE91","#EBCC2A","#F21A00")) +
+#   geom_hline(data = thresholds, aes(yintercept = upper), color = "#F21A00") +
+#   geom_hline(data = thresholds, aes(yintercept = lower), color = "#F21A00") +
+#   theme(axis.text.x = element_text(size = 6))
+```
+
