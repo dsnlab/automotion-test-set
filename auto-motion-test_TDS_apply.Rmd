@@ -1,0 +1,291 @@
+---
+title: "auto-motion test TDS apply"
+author: "Dani Cosme"
+date: "1/5/2018"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE, fig.path='Figs/TDS/')
+options(scipen=999)
+```
+
+# load packages
+```{r}
+library(tidyverse)
+library(glmnet)
+library(caTools)
+library(caret)
+library(ROCR)
+```
+
+# load coded data
+```{r}
+coded = read.csv("~/Documents/code/dsnlab/automotion-test-set/tds_artifact_coded_volumes.csv")
+```
+
+# load stripe detection data
+```{r}
+fileDir = "~/Documents/code/dsnlab/automotion-test-set/output/"
+filePattern = "tds_stripes_.*.csv"
+  
+file_list = list.files(fileDir, pattern = filePattern)
+
+for (file in file_list){
+  # if the merged dataset doesn't exist, create it
+  if (!exists("stripes")){
+    temp = read.csv(paste0(fileDir,file))
+    stripes = data.frame(temp) %>% 
+      rename("volume" = t,
+             "subjectID" = subject) %>%
+      select(-file)
+    rm(temp)
+  }
+  
+  # if the merged dataset does exist, append to it
+  else {
+    temp_dataset = read.csv(paste0(fileDir,file))
+    temp_dataset = data.frame(temp_dataset) %>% 
+      rename("volume" = t,
+             "subjectID" = subject) %>%
+      select(-file)
+    stripes = rbind(stripes, temp_dataset)
+    rm(temp_dataset)
+  }
+}
+```
+
+# load global intensities and rps
+```{r}
+# define paths and variables
+rpDir = '~/Documents/code/dsnlab/automotion-test-set/rp_txt/'
+outputDir = '~/Documents/code/tds_auto-motion/auto-motion-output/'
+study = "tds2"
+rpPattern = "^rp_([0-9]{3})_(.*).txt"
+rpCols = c("euclidian_trans","euclidian_rot","euclidian_trans_deriv","euclidian_rot_deriv","trash.rp")
+
+# global intensities
+intensities = read.csv(paste0(outputDir,study,'_globalIntensities.csv'))
+
+# edit volume numbers for subject 157, stop3
+intensities = intensities %>% 
+  mutate(volume = ifelse(subjectID == 157 & run == "stop3" & volume > 43, volume - 1, volume))
+
+# rp files
+file_list = list.files(rpDir, pattern = rpPattern)
+
+for (file in file_list){
+  # if the merged dataset doesn't exist, create it
+  if (!exists("rp")){
+    temp = read.table(paste0(rpDir,file))
+    colnames(temp) = rpCols
+    rp = data.frame(temp, file = rep(file,count(temp))) %>% 
+      mutate(volume = row_number()) %>%
+      extract(file,c("subjectID","run"), rpPattern) %>%
+      mutate(subjectID = as.integer(subjectID))
+    rm(temp)
+  }
+  
+  # if the merged dataset does exist, append to it
+  else {
+    temp_dataset = read.table(paste0(rpDir,file))
+    colnames(temp_dataset) = rpCols
+    temp_dataset = data.frame(temp_dataset, file = rep(file,count(temp_dataset))) %>% 
+      mutate(volume = row_number()) %>%
+      extract(file,c("subjectID","run"), rpPattern) %>%
+      mutate(subjectID = as.integer(subjectID))
+    rp = rbind(rp, temp_dataset)
+    rm(temp_dataset)
+  }
+}
+```
+
+# join dataframes
+```{r}
+joined = left_join(stripes, coded, by = c("subjectID", "run", "volume")) %>%
+  left_join(., intensities, by = c("subjectID", "run", "volume")) %>%
+  left_join(., rp, by = c("subjectID", "run", "volume")) %>%
+  mutate(striping = ifelse(is.na(striping), 0, striping),
+         intensity = ifelse(is.na(intensity), 0, intensity),
+         tile = paste0("tile_",tile),
+         artifact = ifelse(striping > 1, 1, 0)) %>%
+  group_by(subjectID, run, tile) %>%
+  mutate(Diff.mean = volMean - lag(volMean),
+         Diff.sd = volSD - lag(volSD)) %>%
+  spread(tile, freqtile_power)
+```
+
+# load models
+```{r}
+setwd("~/Documents/code/dsnlab/automotion-test-set")
+model_log = readRDS("model_log_FP.rds")
+model_svm = readRDS("model_svm_FP.rds")
+```
+
+# split the data 
+```{r}
+set.seed(101) 
+sample = sample.split(joined$artifact, SplitRatio = .75)
+training = subset(joined, sample == TRUE)
+testing = subset(joined, sample == FALSE)
+```
+
+# machine learning
+## tidy data
+```{r}
+ml = joined %>%
+  group_by(subjectID, run) %>%
+  mutate(Diff.mean = ifelse(is.na(Diff.mean),0,Diff.mean),
+         Diff.sd = ifelse(is.na(Diff.sd),0,Diff.sd)) %>%
+  gather(tile,freqtile_power, starts_with("tile")) %>%
+  mutate(tile = paste0(tile,"_c")) %>%
+  group_by(subjectID, run, tile) %>%
+  mutate(freqtile_power_c = freqtile_power - mean(freqtile_power, na.rm=TRUE)) %>%
+  ungroup() %>%
+  select(-freqtile_power) %>%
+  spread(tile,freqtile_power_c) %>%
+  select(-fsl.volume, -striping, -intensity, -trash.rp, -volMean, -volSD, -euclidian_rot, -euclidian_trans) %>%
+  select(subjectID, run, volume, artifact, everything())
+```
+
+## logistic regression
+```{r logreg-translation, fig.width=20, fig.height=100}
+x = as.matrix(ml[,-c(1,2,3,4)])
+y = as.double(as.matrix(ml[, 4]))
+pred = predict(model_log, newx = x, s=model_log$lambda.1se, type="response")
+pred[pred > .05] = 1
+pred[pred < .05] = 0
+```
+
+## svm
+```{r svm-translation, fig.width=20, fig.height=100}
+full_svm = ml  %>%
+  mutate(artifact = ifelse(artifact == 1, "yes","no"),
+         artifact = as.factor(artifact))
+
+# re-run svm on full sample
+full_pred = predict(model_svm, newdata = full_svm, type="prob") %>%
+  select(-no)
+full_pred =  as.matrix(full_pred)
+full_pred[full_pred > .09] = "yes"
+full_pred[full_pred < .09] = "no"
+```
+
+# auto-motion process
+```{r, fig.width=20, fig.height=100}
+man = joined %>%
+  gather(tile, freqtile_power, starts_with("tile")) %>%
+  filter(tile %in% c("tile_1", "tile_10")) %>%
+  
+  # code trash based on mean, sd, and rp
+  ungroup %>%
+  mutate(meanDiff.mean = mean(Diff.mean, na.rm=TRUE),
+         sdDiff.mean = sd(Diff.mean, na.rm=TRUE),
+         meanDiff.sd = mean(Diff.sd, na.rm=TRUE),
+         sdDiff.sd = sd(Diff.sd, na.rm=TRUE),
+         
+         # code volumes above mean thresholds as trash
+         upper.mean = meanDiff.mean + 2*sdDiff.mean,
+         lower.mean = meanDiff.mean - 2*sdDiff.mean,
+         trash.mean = ifelse(Diff.mean > upper.mean | Diff.mean < lower.mean, 1, 0),
+         
+         upper.sd = meanDiff.sd + 2*sdDiff.sd,
+         lower.sd = meanDiff.sd - 2*sdDiff.sd,
+         trash.sd = ifelse(Diff.sd > upper.sd | Diff.sd < lower.sd, 1, 0),
+         
+         # code volumes with more than +/- .25mm translation or rotation in Euclidian distance
+         trash.rp.tr = ifelse(euclidian_trans_deriv > .25 | euclidian_trans_deriv < -.25, 1, 0),
+         trash.rp.rot = ifelse(euclidian_rot_deriv > .25 | euclidian_rot_deriv < -.25, 1, 0)) %>%
+  select(-meanDiff.mean, -meanDiff.sd, -sdDiff.mean, -sdDiff.sd) %>%
+  
+  # code trash based on striping
+  group_by(subjectID, run, tile) %>%
+  mutate(freqtile_power_c = freqtile_power - mean(freqtile_power, na.rm=TRUE)) %>%
+  ungroup() %>%
+  select(-freqtile_power) %>%
+  spread(tile,freqtile_power_c) %>%
+  mutate(trash.stripe = ifelse(tile_1 < -.035 & tile_10 > .00025, 1, 0)) %>%
+  
+  # combine trash
+  mutate(trash.combined = ifelse(trash.stripe == 1, 1, 0),
+         trash.sum = trash.rp.tr + trash.rp.rot + trash.mean + trash.sd,
+         trash.combined = ifelse((trash.rp.tr + trash.rp.rot + trash.mean + trash.sd) > 1, 1, trash.combined)) %>%
+
+  # recode as trash if volume behind and in front are both marked as trash
+  mutate(trash.combined = ifelse(trash.combined == 0 & lag(trash.combined) == 1 & lead(trash.combined) == 1, 1, trash.combined)) %>%
+         
+  # code first volume as trash if second volume is trash
+  mutate(trash.combined = ifelse(volume == 1 & lead(trash.combined) == 1, 1, trash.combined)) %>%
+
+  # code hits
+  mutate(hits = ifelse(trash.combined == 1 & (artifact == 1), "hit",
+                ifelse(trash.combined == 0 & (artifact == 1), "neg",
+                ifelse(trash.combined == 1 & (artifact == 0), "pos", NA))),
+         label = ifelse(regexpr('.*', hits), as.character(volume), ''),
+         hits = as.factor(hits)) %>%
+  gather(tile, freqtile_power_c, c("tile_1", "tile_10"))
+```
+
+# confusion matrices
+## logistic regression
+```{r}
+confusionMatrix(pred, y)
+```
+
+## svm
+```{r}
+confusionMatrix(full_pred, full_svm$artifact)
+```
+
+## manual
+```{r}
+man1 = man %>%
+  filter(tile == "tile_1")
+confusionMatrix(man1$trash.combined, man1$artifact)
+```
+
+# plot and compare
+## join and plot models
+```{r comp-models-apply, fig.width=60, fig.height=100}
+# logistic regression
+data.plot.log = bind_cols(ml, as.data.frame(y), as.data.frame(pred)) %>%
+  mutate(hits = ifelse(y == 1 & `1` == 1, "hit",
+                ifelse(y == 0 & `1` == 1, "pos",
+                ifelse(y == 1 & `1` == 0, "neg", NA))),
+         label = ifelse(regexpr('.*', hits), as.character(volume), ''),
+         hits = as.factor(hits))
+
+# svm
+data.plot.svm = bind_cols(full_svm, as.data.frame(full_pred)) %>%
+  rename("full_pred" = yes) %>%
+  mutate(hits = ifelse(artifact == "yes" & full_pred == "yes", "hit",
+                ifelse(artifact == "no" & full_pred == "yes", "pos",
+                ifelse(artifact == "yes" & full_pred == "no", "neg", NA))),
+         label = ifelse(regexpr('.*', hits), as.character(volume), ''),
+         hits = as.factor(hits))
+
+# plot and compare models
+plot.comp = man %>%
+  filter(tile == "tile_1") %>%
+  select(subjectID, run, volume, euclidian_trans_deriv, hits) %>%
+  rename("auto" = hits) %>%
+  left_join(data.plot.log, by = c("subjectID", "run", "volume", "euclidian_trans_deriv")) %>%
+  select(subjectID, run, volume, euclidian_trans_deriv, auto, hits) %>%
+  rename("log" = hits) %>%
+  left_join(data.plot.svm, by = c("subjectID", "run", "volume", "euclidian_trans_deriv")) %>%
+  select(subjectID, run, volume, euclidian_trans_deriv, auto, log, hits) %>%
+  rename("svm" = hits) %>%
+  gather(model, hits, c("auto", "log", "svm")) %>%
+  mutate(label = ifelse(regexpr('.*', hits), as.character(volume), ''))
+
+ggplot(plot.comp, aes(x = volume, y = euclidian_trans_deriv)) +
+  geom_line(size = .25) +
+  geom_point(data = subset(plot.comp, !is.na(hits)), aes(color = hits), size = 2.5) +
+  geom_text(aes(label = label), size = 1.5) +
+  facet_wrap(~ subjectID + run + model, ncol = 9, scales = "free") +
+  scale_color_manual(values = c("#3B9AB2","#EBCC2A","#F21A00")) +
+  theme(axis.text.x = element_text(size = 6))
+```
