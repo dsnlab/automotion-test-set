@@ -92,7 +92,7 @@ Manually coded fMRI data against which to test the automotion scripts.
 
 # Conclusions
 - Manual coding was the most accurate 
-- Manual coding still relies on distributions (i.e. for changes in intensity mean and sd)
+- Manual coding still relies on distributions (i.e. for changes in intensity mean and sd); could be improved in the future through automated parameter tuning
 - The process appears to generalize across datasets
 - It would be ideal to have a second person rate all of the volumes used in these analyses to increase the confidence of the coding
 - Building the machine learning models on FP and applying to TDS seemed more stable as it was a much larger dataset
