@@ -389,7 +389,7 @@ train.man = training %>%
   
   # combine trash
   mutate(trash.combined = ifelse(trash.stripe == 1, 1, 0),
-         trash.sum = trash.rp.tr + trash.rp.rot + trash.mean + trash.sd,
+         trash.sum = trash.rp.tr + trash.rp.rot + trash.mean + trash.sd + trash.stripe,
          trash.combined = ifelse((trash.rp.tr + trash.rp.rot + trash.mean + trash.sd) > 1, 1, trash.combined)) %>%
 
   # recode as trash if volume behind and in front are both marked as trash

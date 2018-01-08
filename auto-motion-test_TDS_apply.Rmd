@@ -111,8 +111,10 @@ joined = left_join(stripes, coded, by = c("subjectID", "run", "volume")) %>%
   mutate(striping = ifelse(is.na(striping), 0, striping),
          intensity = ifelse(is.na(intensity), 0, intensity),
          tile = paste0("tile_",tile),
-         artifact = ifelse(striping > 1, 1, 0)) %>%
-  group_by(subjectID, run, tile) %>%
+         artifact = ifelse(striping > 1, 1, 0),
+         confidence = ifelse(striping == 1, "maybe", "sure"),
+         confidence = as.factor(confidence)) %>%
+  group_by(subjectID, run, tile) %>% 
   mutate(Diff.mean = volMean - lag(volMean),
          Diff.sd = volSD - lag(volSD)) %>%
   spread(tile, freqtile_power)
@@ -147,7 +149,7 @@ ml = joined %>%
   ungroup() %>%
   select(-freqtile_power) %>%
   spread(tile,freqtile_power_c) %>%
-  select(-fsl.volume, -striping, -intensity, -trash.rp, -volMean, -volSD, -euclidian_rot, -euclidian_trans) %>%
+  select(-fsl.volume, -striping, -intensity, -confidence, -trash.rp, -volMean, -volSD, -euclidian_rot, -euclidian_trans) %>%
   select(subjectID, run, volume, artifact, everything())
 ```
 
@@ -191,10 +193,12 @@ man = joined %>%
          upper.mean = meanDiff.mean + 2*sdDiff.mean,
          lower.mean = meanDiff.mean - 2*sdDiff.mean,
          trash.mean = ifelse(Diff.mean > upper.mean | Diff.mean < lower.mean, 1, 0),
+         trash.mean = ifelse(is.na(Diff.mean),0,trash.mean),
          
          upper.sd = meanDiff.sd + 2*sdDiff.sd,
          lower.sd = meanDiff.sd - 2*sdDiff.sd,
          trash.sd = ifelse(Diff.sd > upper.sd | Diff.sd < lower.sd, 1, 0),
+         trash.sd = ifelse(is.na(Diff.sd),0,trash.sd),
          
          # code volumes with more than +/- .25mm translation or rotation in Euclidian distance
          trash.rp.tr = ifelse(euclidian_trans_deriv > .25 | euclidian_trans_deriv < -.25, 1, 0),
@@ -211,7 +215,7 @@ man = joined %>%
   
   # combine trash
   mutate(trash.combined = ifelse(trash.stripe == 1, 1, 0),
-         trash.sum = trash.rp.tr + trash.rp.rot + trash.mean + trash.sd,
+         trash.sum = trash.rp.tr + trash.rp.rot + trash.mean + trash.sd + trash.stripe,
          trash.combined = ifelse((trash.rp.tr + trash.rp.rot + trash.mean + trash.sd) > 1, 1, trash.combined)) %>%
 
   # recode as trash if volume behind and in front are both marked as trash
@@ -270,22 +274,25 @@ data.plot.svm = bind_cols(full_svm, as.data.frame(full_pred)) %>%
 # plot and compare models
 plot.comp = man %>%
   filter(tile == "tile_1") %>%
-  select(subjectID, run, volume, euclidian_trans_deriv, hits) %>%
+  select(subjectID, run, volume, euclidian_trans_deriv, hits, confidence, intensity) %>%
   rename("auto" = hits) %>%
   left_join(data.plot.log, by = c("subjectID", "run", "volume", "euclidian_trans_deriv")) %>%
-  select(subjectID, run, volume, euclidian_trans_deriv, auto, hits) %>%
+  select(subjectID, run, volume, euclidian_trans_deriv, auto, hits, confidence, intensity) %>%
   rename("log" = hits) %>%
   left_join(data.plot.svm, by = c("subjectID", "run", "volume", "euclidian_trans_deriv")) %>%
-  select(subjectID, run, volume, euclidian_trans_deriv, auto, log, hits) %>%
+  select(subjectID, run, volume, euclidian_trans_deriv, auto, log, hits, confidence, intensity) %>%
   rename("svm" = hits) %>%
   gather(model, hits, c("auto", "log", "svm")) %>%
-  mutate(label = ifelse(regexpr('.*', hits), as.character(volume), ''))
+  mutate(label = ifelse(regexpr('.*', hits), as.character(volume), ''),
+         intensity = as.factor(intensity))
 
 ggplot(plot.comp, aes(x = volume, y = euclidian_trans_deriv)) +
   geom_line(size = .25) +
-  geom_point(data = subset(plot.comp, !is.na(hits)), aes(color = hits), size = 2.5) +
+  geom_point(data = subset(plot.comp, !is.na(hits)), aes(color = hits, alpha = confidence, shape = intensity), size = 2.5) +
   geom_text(aes(label = label), size = 1.5) +
   facet_wrap(~ subjectID + run + model, ncol = 9, scales = "free") +
   scale_color_manual(values = c("#3B9AB2","#EBCC2A","#F21A00")) +
+  scale_alpha_manual(values = c(.25, 1)) +
+  scale_shape_manual(values = c(16, 17, 15), labels = c("no", "maybe", "yes")) +
   theme(axis.text.x = element_text(size = 6))
 ```
