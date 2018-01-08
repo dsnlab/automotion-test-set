@@ -91,7 +91,7 @@ Manually coded fMRI data against which to test the automotion scripts.
 - For TDS, confidence of striping coding, and intensity changes were also included in the plot
 
 # Conclusions
-- Manual coding was the most accurate 
+- Manual coding was the most accurate and the only process in which accuracy was significantly greater than the no information rate for both datasets
 - Manual coding still relies on distributions (i.e. for changes in intensity mean and sd); could be improved in the future through automated parameter tuning
 - The process appears to generalize across datasets
 - It would be ideal to have a second person rate all of the volumes used in these analyses to increase the confidence of the coding
